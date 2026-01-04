@@ -83,8 +83,8 @@ else:
         AllowedOAuthFlows=["code"],
         AllowedOAuthScopes=["email", "openid", "profile"],
         AllowedOAuthFlowsUserPoolClient=True,
-        CallbackURLs=["http://localhost:8501"],
-        LogoutURLs=["http://localhost:8501/logout"],
+        CallbackURLs=["http://localhost:8507"],
+        LogoutURLs=["http://localhost:8507/logout"],
     )
     app_client_id = response_client["UserPoolClient"]["ClientId"]
     logger.success(f"App Client created with ID: {app_client_id}")
