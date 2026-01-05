@@ -1,0 +1,276 @@
+# Orb 'circleci/aws-cli@5.3.1' resolved to 'circleci/aws-cli@5.3.1'
+version: 2
+jobs:
+  build-deploy:
+    docker:
+    - image: cimg/python:3.12
+    steps:
+    - checkout
+    - run:
+        name: Install UV
+        command: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+    - run:
+        name: Create venv and install dependencies
+        command: |
+          uv sync --all-groups
+    # - run:
+    #     name: Run ruff
+    #     command: |
+    #       uv run ruff check . --fix --exit-non-zero-on-fix
+    # - run:
+    #     name: Run MyPy
+    #     command: |
+    #       uv run mypy
+    - run:
+        circleci config validate
+    - run:
+        command: |-
+          #!/bin/bash
+          AWS_CLI_STR_AWS_CLI_VERSION="$(echo "${AWS_CLI_STR_AWS_CLI_VERSION}" | circleci env subst)"
+          AWS_CLI_EVAL_INSTALL_DIR="$(eval echo "${AWS_CLI_EVAL_INSTALL_DIR}" | circleci env subst)"
+          AWS_CLI_EVAL_BINARY_DIR="$(eval echo "${AWS_CLI_EVAL_BINARY_DIR}" | circleci env subst)"
+
+          eval "$SCRIPT_UTILS"
+          detect_os
+          set_sudo
+
+          # Install per platform
+          if [ "$SYS_ENV_PLATFORM" = "linux" ] || [ "$SYS_ENV_PLATFORM" = "linux_alpine" ]; then
+              eval "$SCRIPT_INSTALL_LINUX"
+          elif [ "$SYS_ENV_PLATFORM" = "windows" ]; then
+              eval "$SCRIPT_INSTALL_WINDOWS"
+          elif [ "$SYS_ENV_PLATFORM" = "macos" ]; then
+              eval "$SCRIPT_INSTALL_MACOS"
+          else
+              echo "This orb does not currently support your platform. If you believe it should, please consider opening an issue on the GitHub repository:"
+              echo "https://github.com/CircleCI-Public/aws-cli-orb/issues/new"
+              exit 1
+          fi
+
+          Toggle_Pager(){
+              # Toggle AWS Pager
+              if [ "$AWS_CLI_BOOL_DISABLE_PAGER" -eq 1 ]; then
+                  if [ -z "${AWS_PAGER+x}" ]; then
+                      echo 'export AWS_PAGER=""' >>"$BASH_ENV"
+                      echo "AWS_PAGER is being set to the empty string to disable all output paging for AWS CLI commands."
+                      echo "You can set the 'disable-aws-pager' parameter to 'false' to disable this behavior."
+                  fi
+              fi
+          }
+
+          if [ "$AWS_CLI_STR_AWS_CLI_VERSION" = "latest" ]; then
+              # shellcheck disable=SC3040
+              set +o pipefail
+              CLI_COMPARISON_VERSION="$(wget -q -O - https://api.github.com/repos/aws/aws-cli/tags | grep '"name":' | head -n 1 | awk -F'"' '{print $4}')"
+              echo "Latest is: $CLI_COMPARISON_VERSION"
+              set -o pipefail
+          else
+              CLI_COMPARISON_VERSION="$AWS_CLI_STR_AWS_CLI_VERSION"
+          fi
+
+          if ! command -v aws >/dev/null 2>&1; then
+              Install_AWS_CLI "${AWS_CLI_STR_AWS_CLI_VERSION}"
+          elif aws --version | awk '{print $2}' | grep "${CLI_COMPARISON_VERSION}"; then
+              echo "AWS CLI version ${CLI_COMPARISON_VERSION} already installed. Skipping installation"
+              exit 0
+          elif [ "$AWS_CLI_BOOL_OVERRIDE" -eq 1 ]; then
+              Uninstall_AWS_CLI
+              Install_AWS_CLI "${AWS_CLI_STR_AWS_CLI_VERSION}"
+          else
+              echo "AWS CLI is already installed, skipping installation."
+              aws --version
+          fi
+
+          Toggle_Pager
+        environment:
+          AWS_CLI_BOOL_DISABLE_PAGER: true
+          AWS_CLI_BOOL_OVERRIDE: false
+          AWS_CLI_EVAL_BINARY_DIR: /usr/local/bin
+          AWS_CLI_EVAL_INSTALL_DIR: /usr/local/aws-cli
+          AWS_CLI_STR_AWS_CLI_VERSION: latest
+          SCRIPT_INSTALL_LINUX: |-
+            #!/bin/sh
+            #shellcheck disable=SC1090
+            Install_AWS_CLI() {
+                echo "Installing AWS CLI v2"
+                cd /tmp || exit
+                if [ "$SYS_ENV_PLATFORM" = "linux_alpine" ]; then
+                    apk update && apk upgrade && apk add -U curl
+                    apk --no-cache add binutils
+                    apk --no-cache add libcurl
+                    apk --no-cache upgrade libcurl
+                    apk --no-cache add aws-cli
+                else
+                    if [ "$1" = "latest" ]; then
+                        version=""
+                    else
+                        version="-$1"
+                    fi
+
+                    PLATFORM=$(uname -m)
+                    curl -sSL "https://awscli.amazonaws.com/awscli-exe-linux-$PLATFORM$version.zip" -o "awscliv2.zip"
+                    unzip -q -o awscliv2.zip
+                    $SUDO ./aws/install -i "${AWS_CLI_EVAL_INSTALL_DIR}" -b "${AWS_CLI_EVAL_BINARY_DIR}"
+                    rm -r awscliv2.zip ./aws
+                fi
+            }
+
+            Uninstall_AWS_CLI() {
+                AWS_CLI_PATH=$(command -v aws)
+                echo "$AWS_CLI_PATH"
+                if [ -n "$AWS_CLI_PATH" ]; then
+                    EXISTING_AWS_VERSION=$(aws --version)
+                    echo "Uninstalling ${EXISTING_AWS_VERSION}"
+                    # shellcheck disable=SC2012
+                    if [ -L "$AWS_CLI_PATH" ]; then
+                        AWS_SYMLINK_PATH=$(ls -l "$AWS_CLI_PATH" | sed -e 's/.* -> //')
+                    fi
+                    $SUDO rm -rf "$AWS_CLI_PATH" "$AWS_SYMLINK_PATH" "$HOME/.aws/" "/usr/local/bin/aws" "/usr/local/bin/aws_completer" "/usr/local/aws-cli"
+                else
+                    echo "No AWS install found"
+                fi
+            }
+          SCRIPT_INSTALL_MACOS: |-
+            #!/bin/sh
+            Install_AWS_CLI() {
+                echo "Installing AWS CLI v$version"
+                if [ "$USE_BREW" -eq 1 ]; then
+                    brew install "awscli"
+                else
+                    if [ "$1" = "latest" ]; then
+                        version=""
+                    else
+                        version="-$1"
+                    fi
+                    cd /tmp || exit
+                    curl -o awscli.tar.gz "https://awscli.amazonaws.com/awscli$version.tar.gz"
+                    mkdir awscli
+                    tar -xzf awscli.tar.gz -C awscli --strip-components=1
+                    rm awscli.tar.gz
+                    cd awscli || exit
+                    ./configure --with-download-deps
+                    make
+                    $SUDO make install
+                fi
+            }
+
+            Uninstall_AWS_CLI() {
+                AWS_CLI_PATH=$(command -v aws)
+                echo "$AWS_CLI_PATH"
+                if [ -n "$AWS_CLI_PATH" ]; then
+                    EXISTING_AWS_VERSION=$(aws --version)
+                    echo "Uninstalling ${EXISTING_AWS_VERSION}"
+                    # shellcheck disable=SC2012
+                    if [ -L "$AWS_CLI_PATH" ]; then
+                        AWS_SYMLINK_PATH=$(ls -l "$AWS_CLI_PATH" | sed -e 's/.* -> //')
+                    fi
+                    $SUDO rm -rf "$AWS_CLI_PATH" "$AWS_SYMLINK_PATH" "$HOME/.aws/" "/usr/local/bin/aws" "/usr/local/bin/aws_completer" "/usr/local/aws-cli"
+                else
+                    echo "No AWS install found"
+                fi
+            }
+          SCRIPT_INSTALL_WINDOWS: |-
+            #!/bin/sh
+
+            Install_AWS_CLI(){
+                if [ "$1" = "latest" ]; then
+                    version=""
+                else
+                    version="$1"
+                fi
+                echo "Installing AWS CLI v2"
+                cd /tmp || exit
+
+                if ! command -v choco >/dev/null 2>&1; then
+                    echo "Chocolatey is required to install AWS"
+                    exit 1
+                fi
+                yes "Yes" | choco install -y awscli --version="$version"
+                echo "Installing AWS CLI version $version"
+                if echo "$1" | grep -e "^2\." -e "latest"; then
+                    echo "export PATH=\"\${PATH}:/c/Program Files/Amazon/AWSCLIV2\"" >> "$BASH_ENV"
+                else
+                    echo "export PATH=\"\${PATH}:/c/Program Files/Amazon/AWSCLI/bin\"" >>"$BASH_ENV"
+                fi
+            }
+
+            Uninstall_AWS_CLI() {
+                if ! command -v choco >/dev/null 2>&1; then
+                    echo "Chocolatey is required to uninstall AWS"
+                    exit 1
+                fi
+                choco uninstall awscli
+            }
+          SCRIPT_UTILS: "# shellcheck disable=SC2148\ndetect_os() { \n  detected_platform=\"$(uname -s | tr '[:upper:]' '[:lower:]')\"\n\n  case \"$detected_platform\" in\n    linux*)\n        if grep \"Alpine\" /etc/issue >/dev/null 2>&1; then\n            printf '%s\\n' \"Detected OS: Alpine Linux.\"\n            SYS_ENV_PLATFORM=linux_alpine\n        else\n            printf '%s\\n' \"Detected OS: Linux.\"\n            SYS_ENV_PLATFORM=linux\n        fi  \n      ;;\n    darwin*)\n      printf '%s\\n' \"Detected OS: macOS.\"\n      SYS_ENV_PLATFORM=macos\n      ;;\n    msys*|cygwin*)\n      printf '%s\\n' \"Detected OS: Windows.\"\n      SYS_ENV_PLATFORM=windows\n      ;;\n    *)\n      printf '%s\\n' \"Unsupported OS: \\\"$detected_platform\\\".\"\n      exit 1\n      ;;\n  esac\n\n  export SYS_ENV_PLATFORM\n}\n\nset_sudo(){\n    if [ \"$SYS_ENV_PLATFORM\" = \"linux_alpine\" ]; then\n        if [ \"$ID\" = 0 ]; then export SUDO=\"\"; else export SUDO=\"sudo\"; fi\n    else\n        if [ \"$EUID\" = 0 ]; then export SUDO=\"\"; else export SUDO=\"sudo\"; fi\n    fi\n}"
+          USE_BREW: false
+        name: Install AWS CLI - latest
+    - run:
+        command: |-
+            #!/bin/sh
+            #shellcheck disable=SC1090
+            # AWS_CLI_STR_ACCESS_KEY_ID=\"$(echo \"$AWS_CLI_STR_ACCESS_KEY_ID\" | circleci env subst)\"
+            # AWS_CLI_STR_SECRET_ACCESS_KEY=\"$(echo \"$AWS_CLI_STR_SECRET_ACCESS_KEY\" | circleci env subst)\"
+            # AWS_CLI_STR_SESSION_TOKEN=\"$(echo \"$AWS_CLI_STR_SESSION_TOKEN\" | circleci env subst)\"
+            # AWS_CLI_STR_REGION=\"$(echo \"$AWS_CLI_STR_REGION\" | circleci env subst)\"
+            # AWS_CLI_STR_PROFILE_NAME=\"$(echo \"$AWS_CLI_STR_PROFILE_NAME\" | circleci env subst)\"
+            # AWS_CLI_BOOL_SET_AWS_ENV_VARS=\"$(echo \"$AWS_CLI_BOOL_SET_AWS_ENV_VARS\" | circleci env subst)\"\
+            # AWS_CLI_STR_ROLE_ARN=\"$(echo \"${AWS_CLI_STR_ROLE_ARN}\" | circleci env subst)\"
+            
+            if [ \"$AWS_CLI_BOOL_SET_AWS_ENV_VARS\" = 0 ]; then 
+                temp_file=\"/tmp/${AWS_CLI_STR_PROFILE_NAME}.keys\"
+                    . \"$temp_file\"
+            else 
+                touch \"${BASH_ENV}\"
+                    . \"${BASH_ENV}\"
+            fi
+            aws configure set aws_access_key_id \\\n    \"$AWS_CLI_STR_ACCESS_KEY_ID\" \\\n    --profile \"$AWS_CLI_STR_PROFILE_NAME\"
+            
+            aws configure set aws_secret_access_key \\\n    \"$AWS_CLI_STR_SECRET_ACCESS_KEY\" \\\n    --profile \"$AWS_CLI_STR_PROFILE_NAME\"
+            
+            if [ -n \"${AWS_CLI_STR_ROLE_ARN}\" ]; then    aws configure set aws_session_token \\\n        \"${AWS_CLI_STR_SESSION_TOKEN}\" \\\n        --profile \"$AWS_CLI_STR_PROFILE_NAME\"
+            
+            fi
+            if [ \"$AWS_CLI_BOOL_CONFIG_DEFAULT_REGION\" -eq \"1\" ]; then
+                aws configure set default.region \"$AWS_CLI_STR_REGION\"
+            fi
+            
+            if [ \"$AWS_CLI_BOOL_CONFIG_PROFILE_REGION\" -eq \"1\" ]; then
+                aws configure set region \"$AWS_CLI_STR_REGION\" \\\n        --profile \"$AWS_CLI_STR_PROFILE_NAME\"
+            fi\n"
+        
+        environment:
+          AWS_CLI_BOOL_CONFIG_DEFAULT_REGION: true
+          AWS_CLI_BOOL_CONFIG_PROFILE_REGION: true
+          AWS_CLI_BOOL_SET_AWS_ENV_VARS: true
+          AWS_CLI_STR_ACCESS_KEY_ID: $AWS_ACCESS_KEY_ID
+          AWS_CLI_STR_PROFILE_NAME: default
+          AWS_CLI_STR_REGION: ${AWS_DEFAULT_REGION}
+          AWS_CLI_STR_ROLE_ARN: ''
+          AWS_CLI_STR_SECRET_ACCESS_KEY: $AWS_SECRET_ACCESS_KEY
+        name: Configure AWS Access Key ID
+    - run:
+        name: Configure Cognito App
+        command: |
+          uv run src/cognito_app.py
+    - run:
+        name: Configure Hosted Domain
+        command: |
+          uv run src/hosted_domain.py
+    - run:
+        name: Configure Google IDP
+        command: |
+          uv run src/google_idp.py
+    - run:
+        name: Configure Client Login Pages
+        command: |
+          uv run src/client_login_pages.py
+    - run:
+        name: Run tests
+        command: |
+          uv run pytest
+workflows:
+  deploy:
+    jobs:
+    - build-deploy
+  version: 2
