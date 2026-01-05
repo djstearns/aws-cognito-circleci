@@ -16,7 +16,7 @@ GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 
 @pytest.fixture
 def cognito_idp_client() -> Any:
-    client = boto3.client("cognito-idp", region_name="eu-central-1")
+    client = boto3.client("cognito-idp", region_name="us-east-1")
     return client
 
 
