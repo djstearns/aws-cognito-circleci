@@ -60,7 +60,7 @@ def main() -> None:
             st.write("ID Token:", tokens["id_token"])
 
             # Add logout button
-            logout_url = f"{COGNITO_DOMAIN}/logout?client_id={CLIENT_ID}&logout_uri=http://localhost:8507/logout"
+            logout_url = f"{COGNITO_DOMAIN}/logout?client_id={CLIENT_ID}&logout_uri=http://localhost:8501/logout"
 
             st.markdown(f"[Logout]({logout_url})")
         else:
